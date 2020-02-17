@@ -656,6 +656,7 @@
                 <activeByDefault>true</activeByDefault>
             </activation>
             <modules>
+                <module>examples/spear-examples</module>
                 <module>examples/storm-starter</module>
                 <module>examples/storm-loadgen</module>
                 <module>examples/storm-mongodb-examples</module>

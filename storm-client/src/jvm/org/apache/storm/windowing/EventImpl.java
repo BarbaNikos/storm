@@ -16,7 +16,7 @@ public class EventImpl<T> implements Event<T> {
     private final T event;
     private long ts;
 
-    EventImpl(T event, long ts) {
+    public EventImpl(T event, long ts) {
         this.event = event;
         this.ts = ts;
     }
