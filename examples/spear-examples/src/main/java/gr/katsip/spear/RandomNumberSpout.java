@@ -22,7 +22,7 @@ public class RandomNumberSpout extends BaseRichSpout {
   
   @Override
   public void open(Map<String, Object> conf, TopologyContext context, SpoutOutputCollector collector) {
-    this.outputCollector = outputCollector;
+    this.outputCollector = collector;
     this.distribution = new NormalDistribution(100.0f, 15.0f);
     count = 0L;
   }
