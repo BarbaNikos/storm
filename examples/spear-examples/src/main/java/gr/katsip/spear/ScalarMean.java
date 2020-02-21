@@ -25,15 +25,8 @@ public class ScalarMean extends ConfigurableTopology {
         .withTumblingWindow(BaseWindowedBolt.Duration.of(100));
     SpearTopologyBuilder builder = new SpearTopologyBuilder();
     builder.setSpout("numbers", spout, 1);
-    Function<Object, Number> extractor = new Function<Object, Number>() {
-      @Override
-      public Number apply(Object o) {
-        Tuple t = (Tuple) o;
-        return t.getDoubleByField("value");
-      }
-    };
-    builder.setApproxScalarBolt("spear-mean", bolt, 100, new MeanTest(confidence), extractor,
-        error, confidence, 1).shuffleGrouping("numbers");
+    builder.setApproxScalarBolt("spear-mean", bolt, 100, new MeanTest(confidence),
+        new ValueExtractor(), error, confidence, 1).shuffleGrouping("numbers");
     Config config = new Config();
     config.put("topology.name", "spear-mean-topo");
     return submit("spear-mean-topo", config, builder);
