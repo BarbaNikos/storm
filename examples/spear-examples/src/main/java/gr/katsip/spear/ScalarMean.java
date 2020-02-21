@@ -11,6 +11,10 @@ import java.util.function.Function;
 
 public class ScalarMean extends ConfigurableTopology {
   
+  public static void main(String[] args) throws Exception {
+    ConfigurableTopology.start(new ScalarMean(), args);
+  }
+  
   @Override
   protected int run(String[] args) throws Exception {
     float error = .05f;
