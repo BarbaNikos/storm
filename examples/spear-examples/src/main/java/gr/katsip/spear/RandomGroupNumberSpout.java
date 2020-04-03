@@ -11,12 +11,13 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.Map;
+import java.util.concurrent.ThreadLocalRandom;
 
-public class RandomNumberSpout extends BaseRichSpout {
+public class RandomGroupNumberSpout extends BaseRichSpout {
   
-  private static final Logger LOG = LoggerFactory.getLogger(RandomNumberSpout.class);
+  private static final Logger LOG = LoggerFactory.getLogger(RandomGroupNumberSpout.class);
   
-  private static final String[] FIELDS = { "time", "value" };
+  private static final String[] FIELDS = {"time", "key", "value" };
   
   private SpoutOutputCollector outputCollector;
   
@@ -25,7 +26,8 @@ public class RandomNumberSpout extends BaseRichSpout {
   private long count;
   
   @Override
-  public void open(Map<String, Object> conf, TopologyContext context, SpoutOutputCollector collector) {
+  public void open(Map<String, Object> conf, TopologyContext context,
+                   SpoutOutputCollector collector) {
     this.outputCollector = collector;
     this.distribution = new NormalDistribution(100.0f, 15.0f);
     count = 0L;
@@ -33,8 +35,9 @@ public class RandomNumberSpout extends BaseRichSpout {
   
   @Override
   public void nextTuple() {
-    double sample = distribution.sample();
-    outputCollector.emit(new Values(System.currentTimeMillis(), sample), count++);
+    double sample = (float) distribution.sample();
+    outputCollector.emit(new Values(System.currentTimeMillis(),
+        ThreadLocalRandom.current().nextInt(5), sample), count++);
   }
   
   @Override
