@@ -14,7 +14,7 @@ import java.util.function.Function;
 public class SpearTopologyBuilder extends TopologyBuilder {
   
   public BoltDeclarer setApproxScalarBolt(String id, IWindowedBolt bolt, int budget,
-                                          Aggregate aggregation,
+                                          ScalarAggregate aggregation,
                                           Function<Object, Number> fieldExtractor,
                                           float error,
                                           float confidence,
@@ -23,5 +23,13 @@ public class SpearTopologyBuilder extends TopologyBuilder {
         error, confidence), parallelismHint);
   }
   
-  
+  public <K> BoltDeclarer setApproxBolt(String id, SpearBolt<K> bolt, int budget,
+                                        Function<Object, K> keyExtractor,
+                                        Function<Object, Number> valueExtractor,
+                                        float error,
+                                        float confidence,
+                                        Number parallelismHint) {
+    return setBolt(id, new SpearBoltExecutor<K>(bolt, keyExtractor, valueExtractor, budget, error,
+        confidence), parallelismHint);
+  }
 }

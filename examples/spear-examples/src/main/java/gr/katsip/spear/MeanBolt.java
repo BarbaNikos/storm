@@ -7,11 +7,15 @@ import org.apache.storm.topology.OutputFieldsDeclarer;
 import org.apache.storm.tuple.Fields;
 import org.apache.storm.tuple.Tuple;
 import org.apache.storm.windowing.TupleWindow;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.Map;
 
 public class MeanBolt extends SpearScalarBolt {
+  
+  private static final Logger LOG = LoggerFactory.getLogger(MeanBolt.class);
   
   private OutputCollector collector;
   
@@ -54,6 +58,7 @@ public class MeanBolt extends SpearScalarBolt {
       out.add(window.getEndTimestamp());
       out.add(result.doubleValue());
       out.add(acceleration);
+      LOG.info("Produced: " + result.floatValue() + ", accelerated: " + acceleration + ".");
       collector.emit(out);
     }
   }

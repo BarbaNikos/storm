@@ -5,7 +5,6 @@ import org.apache.storm.task.IOutputCollector;
 import org.apache.storm.task.OutputCollector;
 import org.apache.storm.task.TopologyContext;
 import org.apache.storm.topology.IRichBolt;
-import org.apache.storm.topology.IWindowedBolt;
 import org.apache.storm.topology.OutputFieldsDeclarer;
 import org.apache.storm.topology.base.BaseWindowedBolt;
 import org.apache.storm.tuple.Fields;
@@ -20,17 +19,23 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.function.Function;
 import java.util.function.Supplier;
 
-public class SpearScalarBoltExecutor implements IRichBolt {
+public class SpearBoltExecutor<K> implements IRichBolt {
   
   public static final String LATE_TUPLE_FIELD = "late_tuple";
-  private static final Logger LOG = LoggerFactory.getLogger(SpearScalarBoltExecutor.class);
+  private static final Logger LOG = LoggerFactory.getLogger(SpearBoltExecutor.class);
   private static final int DEFAULT_WATERMARK_EVENT_INTERVAL_MS = 1000;
-  private static final int DEFAULT_MAX_LAG_MS = 0;
-  private final IWindowedBolt bolt;
-   transient SpearWatermarkEventGenerator waterMarkEventGenerator;
-   private transient WindowedOutputCollector windowedOutputCollector;
-   private transient ScalarSpearWindowLifecycleListener listener;
-  private transient SpearScalarWindowManager windowManager;
+  private static final int DEFAULT_MAX_LAG_MS = 0; // no lag
+  private final SpearBolt<K> bolt;
+  private Function<Object, K> keyExtractor;
+  private Function<Object, Number> valueExtractor;
+  private int budget;
+  private final float error;
+  private final float confidence;
+  
+  transient SpearWatermarkEventGenerator watermarkEventGenerator;
+  private transient WindowedOutputCollector windowedOutputCollector;
+  private transient SpearWindowLifecycleListener<K> listener;
+  private transient SpearWindowManager<K> windowManager;
   private transient int maxLagMs;
   private TimestampExtractor timestampExtractor;
   private transient String lateTupleStream;
@@ -38,32 +43,39 @@ public class SpearScalarBoltExecutor implements IRichBolt {
   private transient EvictionPolicy<Tuple, ?> evictionPolicy;
   private transient BaseWindowedBolt.Duration windowLengthDuration;
   
-  private final Function<Object, Number> fieldExtractor;
-  private final ScalarAggregate aggregation;
-  private int budget;
-  private final float error;
-  private final float confidence;
+  private final K[] groups;
   
-  public SpearScalarBoltExecutor(IWindowedBolt bolt, ScalarAggregate aggregation,
-                                 Function<Object, Number> extractor, int budget,
-                                 float error, float confidence) {
-    if (!(bolt instanceof SpearScalarBolt)) {
-      throw new IllegalArgumentException(String.format("required %s bolt type",
-          SpearScalarBolt.class.getSimpleName()));
-    }
-    this.aggregation = aggregation;
-    this.fieldExtractor = extractor;
+  public SpearBoltExecutor(SpearBolt<K> bolt,
+                           Function<Object, K> keyExtractor,
+                           Function<Object, Number> valueExtractor,
+                           int budget,
+                           float error,
+                           float confidence) {
+    this(bolt, keyExtractor, valueExtractor, budget, error, confidence, null);
+  }
+  
+  public SpearBoltExecutor(SpearBolt<K> bolt,
+                           Function<Object, K> keyExtractor,
+                           Function<Object, Number> valueExtractor,
+                           int budget,
+                           float error,
+                           float confidence,
+                           K[] groups) {
+    this.bolt = bolt;
+    this.timestampExtractor = bolt.getTimestampExtractor();
+    this.keyExtractor = keyExtractor;
+    this.valueExtractor = valueExtractor;
     this.budget = budget;
     this.error = error;
     this.confidence = confidence;
-    this.bolt = bolt;
-    this.timestampExtractor = bolt.getTimestampExtractor();
+    this.groups = groups;
   }
   
-  private SpearScalarWindowManager initWindowManager(ScalarSpearWindowLifecycleListener lifecycleListener,
-      Map<String, Object> conf, TopologyContext context, Collection<Event<Tuple>> queue) {
-    SpearScalarWindowManager manager = new SpearScalarWindowManager(lifecycleListener,
-        queue, aggregation, fieldExtractor, budget, error, confidence);
+  private SpearWindowManager<K> initWindowManager(SpearWindowLifecycleListener<K> lifecycleListener,
+      Map<String, Object> conf, TopologyContext context, Collection<Event<Tuple>> queue,
+      boolean stateful) {
+    SpearWindowManager<K> manager = new SpearWindowManager<>(lifecycleListener, queue,
+        keyExtractor, valueExtractor, bolt, budget, error, confidence, groups);
     BaseWindowedBolt.Count windowLengthCount = BoltExecutorUtils.getWindowLengthCount(conf);
     BaseWindowedBolt.Count slidingIntervalCount = BoltExecutorUtils.getSlidingIntervalCount(conf);
     windowLengthDuration = BoltExecutorUtils.getWindowLengthDuration(conf);
@@ -76,58 +88,57 @@ public class SpearScalarBoltExecutor implements IRichBolt {
       maxLagMs = BoltExecutorUtils.getMaximumLagInMillis(timestampExtractor, conf);
       int watermarkInterval = BoltExecutorUtils.getWatermarkIntervalInMillis(
           timestampExtractor, conf);
-      waterMarkEventGenerator = new SpearWatermarkEventGenerator(manager, watermarkInterval, maxLagMs,
-          BoltExecutorUtils.getComponentStreams(context));
+      watermarkEventGenerator = new SpearWatermarkEventGenerator(manager, watermarkInterval,
+          maxLagMs, BoltExecutorUtils.getComponentStreams(context));
     }
-    BoltExecutorUtils.validate(conf, windowLengthCount, windowLengthDuration,
-        slidingIntervalCount, slidingIntervalDuration);
+    BoltExecutorUtils.validate(conf, windowLengthCount, windowLengthDuration, slidingIntervalCount,
+        slidingIntervalDuration);
     evictionPolicy = getEvictionPolicy(windowLengthCount, windowLengthDuration);
     triggerPolicy = getTriggerPolicy(slidingIntervalCount, slidingIntervalDuration, manager,
         evictionPolicy);
     manager.setWindowLengthDuration(windowLengthDuration);
-    if (windowLengthDuration != null && slidingIntervalDuration != null) {
+    if (windowLengthDuration != null && slidingIntervalDuration != null)
       manager.setSlidingWindowParameters(windowLengthDuration.value, slidingIntervalDuration.value);
-    }
     manager.setEvictionPolicy(evictionPolicy);
     manager.setTriggerPolicy(triggerPolicy);
     return manager;
   }
   
-  protected void restoreState(Map<String, Optional<?>> state) {
+  private void restoreState(Map<String, Optional<?>> state) {
     windowManager.restoreState(state);
   }
   
-  protected Map<String, Optional<?>> getState() {
+  private Map<String, Optional<?>> getState() {
     return windowManager.getState();
   }
   
   protected void start() {
-    if (waterMarkEventGenerator != null) {
-      LOG.debug("Starting watermark event generator.");
-      waterMarkEventGenerator.start();
+    if (watermarkEventGenerator != null) {
+      LOG.debug("starting watermark event generator");
+      watermarkEventGenerator.start();
     }
-    LOG.debug("Starting trigger policy.");
+    LOG.debug("Starting trigger policy");
     triggerPolicy.start();
   }
   
-  private boolean isTupleTs() { return timestampExtractor != null; }
-  
   TriggerPolicy<Tuple, ?> getTriggerPolicy(BaseWindowedBolt.Count slidingIntervalCount,
                                            BaseWindowedBolt.Duration slidingIntervalDuration,
-                                           SpearScalarWindowManager manager,
+                                           SpearWindowManager<K> manager,
                                            EvictionPolicy<Tuple, ?> evictionPolicy) {
     if (slidingIntervalCount != null) {
       if (isTupleTs()) {
-        return new SpearCountTriggerPolicy<>(slidingIntervalCount.value, manager,
+        return new SpearWatermarkCountTriggerPolicy<>(slidingIntervalCount.value, manager,
             evictionPolicy, manager);
+      } else {
+        return new CountTriggerPolicy<>(slidingIntervalCount.value, manager, evictionPolicy);
       }
-      return new CountTriggerPolicy<>(slidingIntervalCount.value, manager, evictionPolicy);
     } else {
       if (isTupleTs()) {
         return new SpearWatermarkTimeTriggerPolicy<>(slidingIntervalDuration.value, manager,
             evictionPolicy, manager);
+      } else {
+        return new TimeTriggerPolicy<>(slidingIntervalDuration.value, manager, evictionPolicy);
       }
-      return new TimeTriggerPolicy<>(slidingIntervalDuration.value, manager, evictionPolicy);
     }
   }
   
@@ -136,23 +147,27 @@ public class SpearScalarBoltExecutor implements IRichBolt {
     if (windowLengthCount != null) {
       if (isTupleTs()) {
         return new WatermarkCountEvictionPolicy<>(windowLengthCount.value);
+      } else {
+        return new CountEvictionPolicy<>(windowLengthCount.value);
       }
-      return new CountEvictionPolicy<>(windowLengthCount.value);
     } else {
       if (isTupleTs()) {
         return new WatermarkTimeEvictionPolicy<>(windowLengthDuration.value, maxLagMs);
+      } else {
+        return new TimeEvictionPolicy<>(windowLengthDuration.value);
       }
-      return new TimeEvictionPolicy<>(windowLengthDuration.value);
     }
   }
   
   @Override
-  public void prepare(Map<String, Object> conf, TopologyContext context, OutputCollector collector) {
-    doPrepare(conf, context, collector, new ConcurrentLinkedQueue<>());
+  public void prepare(Map<String, Object> conf, TopologyContext context,
+                      OutputCollector collector) {
+    doPrepare(conf, context, collector, new ConcurrentLinkedQueue<>(), false);
   }
   
   protected void doPrepare(Map<String, Object> conf, TopologyContext context,
-                           OutputCollector collector, Collection<Event<Tuple>> queue) {
+                           OutputCollector collector, Collection<Event<Tuple>> queue,
+                           boolean stateful) {
     Objects.requireNonNull(conf);
     Objects.requireNonNull(context);
     Objects.requireNonNull(collector);
@@ -160,17 +175,20 @@ public class SpearScalarBoltExecutor implements IRichBolt {
     this.windowedOutputCollector = new WindowedOutputCollector(collector);
     this.bolt.prepare(conf, context, windowedOutputCollector);
     this.listener = newWindowLifecycleListener();
-    this.windowManager = initWindowManager(listener, conf, context, queue);
+    this.windowManager = initWindowManager(listener, conf, context, queue, stateful);
     start();
-    LOG.info("Intialized approx-scalar-window manager {} ",
-        windowManager.getClass().getSimpleName());
+    LOG.info("Initialized approx-window manager {} ", windowManager.getClass().getSimpleName());
+  }
+  
+  private boolean isTupleTs() {
+    return timestampExtractor != null;
   }
   
   @Override
   public void execute(Tuple input) {
     if (isTupleTs()) {
       long ts = timestampExtractor.extractTimestamp(input);
-      if (waterMarkEventGenerator.track(input.getSourceGlobalStreamId(), ts)) {
+      if (watermarkEventGenerator.track(input.getSourceGlobalStreamId(), ts)) {
         windowManager.add(input, ts);
       } else {
         if (lateTupleStream != null) {
@@ -187,22 +205,21 @@ public class SpearScalarBoltExecutor implements IRichBolt {
   
   @Override
   public void cleanup() {
-    if (waterMarkEventGenerator != null) {
-      waterMarkEventGenerator.shutdown();
+    if (watermarkEventGenerator != null) {
+      watermarkEventGenerator.shutdown();
     }
     windowManager.shutdown();
     bolt.cleanup();
   }
   
-  ISpearWindowManager getWindowManager() { return windowManager; }
+  SpearWindowManager<K> getWindowManager() { return windowManager; }
   
   @Override
   public void declareOutputFields(OutputFieldsDeclarer declarer) {
-    String lateTupleStream = (String) getComponentConfiguration()
-        .get(Config.TOPOLOGY_BOLTS_LATE_TUPLE_STREAM);
-    if (lateTupleStream != null) {
+    String lateTupleStream = (String) getComponentConfiguration().get(Config
+        .TOPOLOGY_BOLTS_LATE_TUPLE_STREAM);
+    if (lateTupleStream != null)
       declarer.declareStream(lateTupleStream, new Fields(LATE_TUPLE_FIELD));
-    }
     bolt.declareOutputFields(declarer);
   }
   
@@ -211,8 +228,8 @@ public class SpearScalarBoltExecutor implements IRichBolt {
     return this.bolt.getComponentConfiguration();
   }
   
-  ScalarSpearWindowLifecycleListener newWindowLifecycleListener() {
-    return new ScalarSpearWindowLifecycleListener() {
+  SpearWindowLifecycleListener<K> newWindowLifecycleListener() {
+    return new SpearWindowLifecycleListener<K>() {
       
       @Override
       public void onExpiry(List<Tuple> events) {
@@ -228,28 +245,31 @@ public class SpearScalarBoltExecutor implements IRichBolt {
       }
       
       @Override
-      public void onExpeditedActivation(List<Tuple> tuples, Long startTime,
-                                          Long endTime, Number result) {
+      public void onAcceleratedActivation(List<Tuple> tuples, Long start, Long end,
+                                          Map<K, Number> result) {
         windowedOutputCollector.setContext(tuples);
-        acceleratedBoltExecute(tuples, startTime, endTime, result);
+        acceleratedBoltExecute(tuples, start, end, result);
       }
     };
   }
   
-  protected void boltExecute(List<Tuple> tuples, List<Tuple> newTuples, List<Tuple> expiredTuples,
-                             Long timestamp) {
-    this.bolt.execute(new TupleWindowImpl(tuples, newTuples, expiredTuples, getWindowStartTs(timestamp), timestamp));
+  private void boltExecute(List<Tuple> tuples, List<Tuple> newTuples, List<Tuple> expiredTuples,
+                           Long timestamp) {
+    this.bolt.execute(new TupleWindowImpl(tuples, newTuples, expiredTuples,
+        getWindowStartTs(timestamp), timestamp));
   }
   
-  protected void acceleratedBoltExecute(List<Tuple> tuples, long windowStart,
-                                        long windowEnd, Number result) {
-    ((SpearScalarBolt) this.bolt).handleResult(true, new TupleWindowImpl(tuples, null, null,
-        windowStart, windowEnd), result);
+  protected void acceleratedBoltExecute(List<Tuple> tuples, long windowStart, long windowEnd,
+                                        Map<K, Number> result) {
+    TupleWindow window = new TupleWindowImpl(tuples, null, null, windowStart,
+        windowEnd);
+    this.bolt.handleResult(true, window, result);
   }
   
   protected void boltExecute(Supplier<Iterator<Tuple>> tuples, Supplier<Iterator<Tuple>> newTuples,
                              Supplier<Iterator<Tuple>> expiredTuples, Long timestamp) {
-    bolt.execute(new TupleWindowIterImpl(tuples, newTuples, expiredTuples, getWindowStartTs(timestamp), timestamp));
+    bolt.execute(new TupleWindowIterImpl(tuples, newTuples, expiredTuples,
+        getWindowStartTs(timestamp), timestamp));
   }
   
   private Long getWindowStartTs(Long endTs) {
@@ -267,7 +287,9 @@ public class SpearScalarBoltExecutor implements IRichBolt {
   private static class WindowedOutputCollector extends OutputCollector {
     private List<Tuple> inputTuples;
     
-    WindowedOutputCollector(IOutputCollector delegate) { super(delegate); }
+    WindowedOutputCollector(IOutputCollector delegate) {
+      super(delegate);
+    }
     
     void setContext(List<Tuple> inputTuples) {
       this.inputTuples = inputTuples;

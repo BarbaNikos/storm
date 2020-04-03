@@ -35,7 +35,7 @@ public class SpearScalarWindowManager implements TriggerHandler, ISpearWindowMan
   private final float error;
   private final float confidence;
   
-  private Aggregate aggregate;
+  private ScalarAggregate aggregate;
   private Function<Object, Number> extractor;
   private long windowRange;
   private long windowSlide;
@@ -43,7 +43,7 @@ public class SpearScalarWindowManager implements TriggerHandler, ISpearWindowMan
   private Map<TimeWindow, ReservoirSample> samples;
   
   public SpearScalarWindowManager(ScalarSpearWindowLifecycleListener lifecycleListener,
-                                  Aggregate aggregate,
+                                  ScalarAggregate aggregate,
                                   Function<Object, Number> fieldExtractor,
                                   int budget, float error, float confidence) {
     this(lifecycleListener, new ConcurrentLinkedDeque<>(), aggregate, fieldExtractor, budget,
@@ -52,7 +52,7 @@ public class SpearScalarWindowManager implements TriggerHandler, ISpearWindowMan
   
   public SpearScalarWindowManager(ScalarSpearWindowLifecycleListener lifecycleListener,
                                   Collection<Event<Tuple>> queue,
-                                  Aggregate aggregate,
+                                  ScalarAggregate aggregate,
                                   Function<Object, Number> fieldExtractor,
                                   int budget, float error, float confidence) {
     if (budget < .0f)
@@ -72,6 +72,7 @@ public class SpearScalarWindowManager implements TriggerHandler, ISpearWindowMan
     expiredEvents = new ArrayList<>();
     prevWindowEvents = new HashSet<>();
     eventsSinceLastExpiry = new AtomicInteger();
+    samples = new HashMap<>();
   }
   
   public void setEvictionPolicy(EvictionPolicy<Tuple, ?> evictionPolicy) {
@@ -107,7 +108,7 @@ public class SpearScalarWindowManager implements TriggerHandler, ISpearWindowMan
         queue.add(tuple);
         Number value = extractor.apply(tuple.get());
         long timestamp = tuple.getTimestamp();
-        List<TimeWindow>  assignedWindows = WindowAssignUtils.assignWindows(windowRange, windowSlide,
+        List<TimeWindow> assignedWindows = WindowAssignUtils.assignWindows(windowRange, windowSlide,
             timestamp);
         for (TimeWindow w : assignedWindows) {
           if (samples.containsKey(w)) {

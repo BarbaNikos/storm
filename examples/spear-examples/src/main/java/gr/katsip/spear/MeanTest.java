@@ -2,12 +2,12 @@ package gr.katsip.spear;
 
 import org.apache.commons.math3.distribution.NormalDistribution;
 import org.apache.commons.math3.stat.descriptive.SummaryStatistics;
-import org.apache.storm.spear.Aggregate;
+import org.apache.storm.spear.ScalarAggregate;
 
 import java.io.Serializable;
 import java.util.List;
 
-public class MeanTest extends Aggregate implements Serializable {
+public class MeanTest extends ScalarAggregate implements Serializable {
   
   private final double zp;
   
